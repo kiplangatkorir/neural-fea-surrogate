@@ -1,0 +1,22 @@
+physics:
+  model: reissner_mindlin
+  grid: 64
+  bc_types: [clamped, simply_supported, mixed]
+
+data:
+  n_samples: 3000
+  load_types: [uniform, gaussian]
+  E_range: [100, 200]
+  nu_range: [0.2, 0.35]
+  h_range: [0.01, 0.05]
+
+model:
+  type: fno
+  modes: 16
+  width: 64
+  depth: 4
+
+training:
+  batch_size: 8
+  epochs: 100
+  lr: 1e-3
