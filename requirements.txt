@@ -4,4 +4,4 @@ matplotlib
 torch 
 h5py 
 pyyaml 
-fenics
+sfepy
