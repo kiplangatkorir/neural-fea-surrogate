@@ -1,8 +1,16 @@
-from fenics import *
 import numpy as np
 
+from sfepy.discrete import (
+    FieldVariable, Material, Integral, Equation, Equations, Problem
+)
+from sfepy.discrete.fem import Mesh, FEDomain, Field
+from sfepy.terms import Term
+from sfepy.discrete.conditions import Conditions, EssentialBC
+from sfepy.base.base import Struct
+
+
 def solve_plate_rm(
-    q_expr,
+    q_func,
     E,
     nu,
     h,
@@ -10,131 +18,151 @@ def solve_plate_rm(
     n=64,
 ):
     """
-    Solve linear Reissner–Mindlin plate bending problem.
+    Linear Reissner–Mindlin plate solver using SfePy.
 
     Parameters
     ----------
-    q_expr : fenics.Expression or Constant
-        Transverse load q(x,y)
-    E : float
-        Young's modulus
-    nu : float
-        Poisson ratio
-    h : float
-        Plate thickness
+    q_func : callable
+        Function q(x, y) -> load value
+    E, nu, h : float
+        Material parameters
     bc_type : str
-        'clamped', 'simply_supported', or 'mixed'
+        'clamped', 'simply_supported', 'mixed'
     n : int
-        Grid resolution per direction
+        Grid resolution
 
     Returns
     -------
-    w_grid : np.ndarray, shape (n, n)
-        Displacement field on structured grid
+    w_grid : ndarray (n, n)
+        Transverse displacement field
     """
 
-    # ------------------------------------------------------------------
-    # Mesh
-    # ------------------------------------------------------------------
-    mesh = UnitSquareMesh(n - 1, n - 1)
+    # ------------------------------------------------------------
+    # Mesh and domain
+    # ------------------------------------------------------------
+    x = np.linspace(0, 1, n)
+    y = np.linspace(0, 1, n)
+    xx, yy = np.meshgrid(x, y, indexing="ij")
 
-    # ------------------------------------------------------------------
-    # Function spaces
-    # w  : displacement
-    # tx : rotation about y
-    # ty : rotation about x
-    # ------------------------------------------------------------------
-    V = FunctionSpace(mesh, "Lagrange", 2)
-    W = MixedFunctionSpace([V, V, V])
+    coors = np.column_stack([xx.ravel(), yy.ravel()])
+    nx = ny = n
 
-    (w, tx, ty) = TrialFunctions(W)
-    (v, sx, sy) = TestFunctions(W)
+    conn = []
+    for j in range(n - 1):
+        for i in range(n - 1):
+            n0 = j * n + i
+            conn.append([n0, n0 + 1, n0 + n + 1, n0 + n])
 
-    # ------------------------------------------------------------------
-    # Material parameters
-    # ------------------------------------------------------------------
+    mesh = Mesh.from_data(
+        "plate",
+        coors,
+        None,
+        [np.array(conn, dtype=np.int32)],
+        ["2_4"]
+    )
+
+    domain = FEDomain("domain", mesh)
+    omega = domain.create_region("Omega", "all")
+
+    # ------------------------------------------------------------
+    # Fields
+    # ------------------------------------------------------------
+    field_w = Field.from_args("w", np.float64, "scalar", omega, approx_order=2)
+    field_t = Field.from_args("theta", np.float64, "vector", omega, approx_order=2)
+
+    w = FieldVariable("w", "unknown", field_w)
+    v = FieldVariable("v", "test", field_w, primary_var_name="w")
+
+    theta = FieldVariable("theta", "unknown", field_t)
+    psi = FieldVariable("psi", "test", field_t, primary_var_name="theta")
+
+    # ------------------------------------------------------------
+    # Materials
+    # ------------------------------------------------------------
     D = E * h**3 / (12.0 * (1.0 - nu**2))
     G = E / (2.0 * (1.0 + nu))
-    kappa = Constant(5.0 / 6.0)
+    kappa = 5.0 / 6.0
 
-    # ------------------------------------------------------------------
-    # Variational formulation
-    # ------------------------------------------------------------------
-    a_bending = D * (
-        inner(grad(tx), grad(sx)) +
-        inner(grad(ty), grad(sy))
-    ) * dx
+    mat = Material(
+        "mat",
+        D=D,
+        G=G,
+        h=h,
+        kappa=kappa,
+    )
 
-    a_shear = kappa * G * h * (
-        (tx - w.dx(0)) * (sx - v.dx(0)) +
-        (ty - w.dx(1)) * (sy - v.dx(1))
-    ) * dx
+    # Load material
+    def load_fun(ts, coors, **kwargs):
+        q = q_func(coors[:, 0], coors[:, 1])
+        return {"val": q.reshape(-1, 1)}
 
-    a = a_bending + a_shear
-    L = q_expr * v * dx
+    load = Material("load", function=load_fun)
 
-    # ------------------------------------------------------------------
+    integral = Integral("i", order=3)
+
+    # ------------------------------------------------------------
+    # Weak form
+    # ------------------------------------------------------------
+    t_bending = Term.new(
+        "dw_laplace.i.Omega(mat.D, psi, theta)",
+        integral,
+        omega,
+        mat=mat,
+        psi=psi,
+        theta=theta,
+    )
+
+    t_shear = Term.new(
+        "dw_dot.i.Omega(mat.kappa * mat.G * mat.h, psi, theta)",
+        integral,
+        omega,
+        mat=mat,
+        psi=psi,
+        theta=theta,
+    )
+
+    t_load = Term.new(
+        "dw_volume_lvf.i.Omega(load.val, v)",
+        integral,
+        omega,
+        load=load,
+        v=v,
+    )
+
+    eqs = Equations([
+        Equation("bending", t_bending),
+        Equation("shear", t_shear),
+        Equation("load", t_load),
+    ])
+
+    # ------------------------------------------------------------
     # Boundary conditions
-    # ------------------------------------------------------------------
-    bcs = []
+    # ------------------------------------------------------------
+    gamma = domain.create_region("Gamma", "vertices of surface", "facet")
 
     if bc_type == "clamped":
-        bcs = [
-            DirichletBC(W.sub(0), Constant(0.0), "on_boundary"),
-            DirichletBC(W.sub(1), Constant(0.0), "on_boundary"),
-            DirichletBC(W.sub(2), Constant(0.0), "on_boundary"),
-        ]
+        bcs = Conditions([
+            EssentialBC("w_bc", gamma, {"w.all": 0.0}),
+            EssentialBC("t_bc", gamma, {"theta.all": 0.0}),
+        ])
 
     elif bc_type == "simply_supported":
-        bcs = [
-            DirichletBC(W.sub(0), Constant(0.0), "on_boundary"),
-        ]
-
-    elif bc_type == "mixed":
-        left = CompiledSubDomain("near(x[0], 0.0)")
-        right = CompiledSubDomain("near(x[0], 1.0)")
-
-        bcs = [
-            DirichletBC(W.sub(0), Constant(0.0), left),
-            DirichletBC(W.sub(1), Constant(0.0), left),
-            DirichletBC(W.sub(2), Constant(0.0), left),
-            DirichletBC(W.sub(0), Constant(0.0), right),
-        ]
+        bcs = Conditions([
+            EssentialBC("w_bc", gamma, {"w.all": 0.0}),
+        ])
 
     else:
         raise ValueError(f"Unknown bc_type: {bc_type}")
 
-    # ------------------------------------------------------------------
-    # Solve
-    # ------------------------------------------------------------------
-    solution = Function(W)
-    solve(a == L, solution, bcs)
+    # ------------------------------------------------------------
+    # Problem definition and solve
+    # ------------------------------------------------------------
+    pb = Problem("plate_rm", equations=eqs)
+    pb.set_bcs(ebcs=bcs)
 
-    w_sol, _, _ = solution.split(deepcopy=True)
+    pb.set_solver_defaults()
+    state = pb.solve()
 
-    # ------------------------------------------------------------------
-    # Project to structured grid (for ML)
-    # ------------------------------------------------------------------
-    grid = np.linspace(0.0, 1.0, n)
-    w_grid = np.zeros((n, n))
+    w_sol = state.get_parts()["w"].reshape((n, n))
 
-    for i, x in enumerate(grid):
-        for j, y in enumerate(grid):
-            w_grid[j, i] = w_sol(Point(x, y))
-
-    return w_grid
-# Example usage
-if __name__ == "__main__":
-    # Define load
-    q = Constant(-1.0)
-
-    # Material and geometric properties
-    E = 1.0e5      # Young's modulus
-    nu = 0.3       # Poisson ratio
-    h = 0.01       # Plate thickness
-
-    # Solve plate bending problem
-    w_result = solve_plate_rm(q, E, nu, h, bc_type="clamped", n=64)
-
-    # Print maximum displacement
-    print("Maximum displacement:", np.min(w_result))
+    return w_sol
