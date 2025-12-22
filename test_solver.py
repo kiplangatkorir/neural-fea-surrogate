@@ -1,30 +1,23 @@
 import numpy as np
-import matplotlib.pyplot as plt
-
 from fea.plate_rm import solve_plate_rm
 
-# --------------------------------------------------
-# Define load function
-# --------------------------------------------------
-def uniform_load(x, y):
-    return np.ones_like(x)
+# Load function: uniform
+def q_uniform(x, y):
+    return np.ones_like(x) * 1.0  # Unit load
 
-# --------------------------------------------------
-# Solve
-# --------------------------------------------------
-w = solve_plate_rm(
-    q_func=uniform_load,
-    E=200e9,        # Pa
-    nu=0.3,
-    h=0.01,         # m
-    bc_type="clamped",
-    n=64,
-)
+# Material parameters
+E = 150.0
+nu = 0.3
+h = 0.02
+n = 64
 
-# --------------------------------------------------
-# Visualize
-# --------------------------------------------------
-plt.imshow(w, origin="lower", cmap="viridis")
-plt.colorbar(label="Displacement w")
-plt.title("Reissner–Mindlin Plate: Uniform Load")
-plt.show()
+w = solve_plate_rm(q_uniform, E, nu, h, bc_type="clamped", n=n)
+
+# Center deflection
+center_deflection = w[n//2, n//2]
+print("Center deflection:", center_deflection)
+
+# Check symmetry along axes
+sym_x = np.allclose(w, w[::-1, :], atol=1e-6)
+sym_y = np.allclose(w, w[:, ::-1], atol=1e-6)
+print("Symmetry X:", sym_x, "Symmetry Y:", sym_y)
