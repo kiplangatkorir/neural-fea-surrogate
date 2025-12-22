@@ -9,6 +9,9 @@ from sfepy.discrete.conditions import Conditions, EssentialBC
 from sfepy.base.base import Struct
 
 
+
+
+
 def solve_plate_rm(
     q_func,
     E,
