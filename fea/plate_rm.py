@@ -47,7 +47,7 @@ def solve_plate_scalar(
 
     descs = ['2_4'] * conn.shape[0]
 
-    mesh = Mesh.from_data('plate', coors, None, [conn], descs)
+    mesh = Mesh.from_data('plate', coors, [conn], descs)
     domain = FEDomain('domain', mesh)
     omega = domain.create_region('Omega', 'all')
 

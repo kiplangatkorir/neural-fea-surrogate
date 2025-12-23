@@ -1,6 +1,6 @@
 import numpy as np
 import h5py
-from fea.plate_rm_sfepy import solve_plate_scalar
+from fea.plate_rm import solve_plate_scalar
 from fea.loads import uniform_load, point_load, line_load
 from fea.bc_masks import clamped_mask, simply_supported_mask, mixed_mask
 
